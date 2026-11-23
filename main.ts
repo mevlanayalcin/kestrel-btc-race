@@ -70,7 +70,6 @@ interface StrategyContext {
   priceDiv: number;
   totalScoredBars: number;
   closes: number[];
-  highs: number[];
   lows: number[];
   rets: number[];
   sumClose: number;
@@ -106,7 +105,6 @@ function initContext(state: BarsState): StrategyContext {
     priceDiv: 10 ** symSpec.price_scale,
     totalScoredBars,
     closes: [],
-    highs: [],
     lows: [],
     rets: [],
     sumClose: 0,
@@ -308,7 +306,6 @@ function planTwapOrder(
 }
 
 function onBarSignal(state: BarsState, bar: Bar, scoredSeq: number, cCtx: StrategyContext): { targetFrac: number; urgent: boolean } {
-  const h = Number(bar.h) / cCtx.priceDiv;
   const l = Number(bar.l) / cCtx.priceDiv;
   const c = Number(bar.c) / cCtx.priceDiv;
   const o = Number(bar.o) / cCtx.priceDiv;
@@ -319,7 +316,6 @@ function onBarSignal(state: BarsState, bar: Bar, scoredSeq: number, cCtx: Strate
     if (prev > 0) cCtx.rets.push(c / prev - 1.0);
   }
   cCtx.closes.push(c);
-  cCtx.highs.push(h);
   cCtx.lows.push(l);
   cCtx.sumClose += c;
 
@@ -338,9 +334,10 @@ function onBarSignal(state: BarsState, bar: Bar, scoredSeq: number, cCtx: Strate
       cCtx.closes.length >= 6
     ) {
       // Engine A: Vol-Scaled Liquidation-Flush Reversion (LFR)
+      // Use median-filtered closes for peak tracking so single-slot MEV high wicks cannot trigger false drawdowns.
       const ddTh = clampNum(LFR_DD180_SIGMA * vol60, LFR_DD180_FLOOR, LFR_DD180_CAP);
       const d60Th = clampNum(LFR_D60_SIGMA * vol60, LFR_D60_FLOOR, LFR_D60_CAP);
-      const rh180 = rollingMax(cCtx.highs, 180);
+      const rh180 = rollingMax(cCtx.closes, 180);
       const dd180 = c / rh180 - 1.0;
       const base60Idx = cCtx.closes.length > 60 ? cCtx.closes.length - 61 : 0;
       const r60 = c / cCtx.closes[base60Idx]! - 1.0;
@@ -377,8 +374,8 @@ function onBarSignal(state: BarsState, bar: Bar, scoredSeq: number, cCtx: Strate
     return { targetFrac: cCtx.mode === null ? 0 : 1.0, urgent: false };
   }
 
-  // Active position management
-  if (h > cCtx.peakPx) cCtx.peakPx = h;
+  // Active position management (close-based peak tracking is immune to single-slot high wicks)
+  if (c > cCtx.peakPx) cCtx.peakPx = c;
   const gain = c / cCtx.entryPx - 1.0;
   const fromPeak = c / cCtx.peakPx - 1.0;
   const peakGain = cCtx.peakPx / cCtx.entryPx - 1.0;
